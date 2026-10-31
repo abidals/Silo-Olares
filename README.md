@@ -12,7 +12,7 @@ This repository hosts the Olares chart (packaging) for the upstream project [Sil
 - **Hardware-accelerated transcoding** (NVIDIA NVENC via Olares GPU binding; Intel/AMD VAAPI handled by the upstream image where device passthrough exists)
 - Direct play, remuxing, and full-library search (Meilisearch optional off by default)
 
-> **سيلو** هو خادم وسائط ذاتي الاستضافة للأفلام والمسلسلات والكتب الصوتية والكتب الإلكترونية والبودكاست والمانجا، مع واجهة متوافقة مع تطبيقات Jellyfin/Audiobookshelf، ودعم تسريع عتادي للترميز (NVENC) على Olares.
+> **Silo** هو خادم وسائط ذاتي الاستضافة للأفلام والمسلسلات والكتب الصوتية والكتب الإلكترونية والبودكاست والمانجا، مع واجهة متوافقة مع تطبيقات Jellyfin/Audiobookshelf، ودعم تسريع عتادي للترميز (NVENC) على Olares.
 
 ---
 
