@@ -1,5 +1,22 @@
 {{- $siloDomain := (splitList "," .Values.domain.silo | first) -}}
 {{- $secretName := (printf "%s-secrets" .Release.Name) -}}
+{{- /* Compute mode is chosen at install time; the platform surfaces the
+     result as .Values.gpu ("cpu" | "nvidia" | "intel" | ...). Mirrors the
+     official Olares jellyfin chart's accelerator logic. */}}
+{{- $gpuObj := .Values.GPU | default dict }}
+{{- $gpuType := .Values.gpu | default ($gpuObj.Type) | default "cpu" }}
+{{- $isIntelMode := eq $gpuType "intel" }}
+{{- $isNvidiaMode := eq $gpuType "nvidia" }}
+{{- $supportsGpuInject := false }}
+{{- if .Values.sysVersion }}
+{{- $supportsGpuInject = semverCompare ">=1.12.7-0" (toString .Values.sysVersion) }}
+{{- end }}
+{{- /* Olares 1.12.7+: gpu-inject handles vendor wiring. On 1.12.6 Intel
+     falls back to the legacy path: hostPath /dev/dri + supplementalGroups
+     (44 = video, 994 = render) + privileged container. */}}
+{{- $intelNewAccel := and $isIntelMode $supportsGpuInject }}
+{{- $intelLegacyAccel := and $isIntelMode (not $supportsGpuInject) }}
+{{- $gpuAccel := or $isNvidiaMode $isIntelMode }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -8,12 +25,13 @@ metadata:
   namespace: '{{ .Release.Namespace }}'
   labels:
     app.kubernetes.io/name: silo
-  # The platform injects NVIDIA GPU resources into the pod (runtimeClassName
-  # nvidia + nvidia.com/gpu / nvidia.com/gpumem) when an accelerator: nvidia
-  # mode is selected. On a node without an NVIDIA GPU the app falls back to
-  # Silo's own CPU-only transcode path, so this annotation is safe to leave on.
+  # gpu-inject lets the platform wire the vendor device into the pod:
+  # nvidia [runtimeClassName=nvidia + nvidia.com/gpu(+gpumem)], intel
+  # [1.12.7+: host /dev/dri + intel resources]. On a CPU install it is inert.
+  {{- if or $isNvidiaMode $intelNewAccel }}
   annotations:
     applications.app.bytetrade.io/gpu-inject: "true"
+  {{- end }}
 spec:
   replicas: {{ .Values.workloads.silo.replicaCount }}
   selector:
@@ -27,12 +45,24 @@ spec:
         app.kubernetes.io/name: silo
     spec:
       enableServiceLinks: false
+      {{- if and $isIntelMode $gpuAccel }}
+      securityContext:
+        supplementalGroups:
+        - 44
+        - 994
+      {{- end }}
       containers:
         - name: silo
           image: "ghcr.io/silo-server/silo-server:latest"
           # Upstream ships rolling `latest` builds (no release tags); Always keeps
           # restarts/upgrades on the newest build instead of a stale node cache.
           imagePullPolicy: Always
+          {{- if $intelLegacyAccel }}
+          # Olares 1.12.6 legacy Intel path (same pattern as official jellyfin
+          # chart): privileged grants access to the passthrough /dev/dri nodes.
+          securityContext:
+            privileged: true
+          {{- end }}
           # NO extra args: since upstream's "Silo omnibus" rework (s6-overlay,
           # Entrypoint ["/init"], build-1883+), any arg is interpreted by
           # rc.init as a SERVICE NAME — the old `server` subcommand arg made
@@ -63,6 +93,7 @@ spec:
               value: 'https://{{ $siloDomain }}'
             - name: MEDIA_CONTAINER_ROOT
               value: /mnt/media
+            {{- if $isNvidiaMode }}
             # NVIDIA driver injection for NVENC (same recipe as upstream
             # docker-compose.nvidia.yml). `video` is the capability that mounts
             # libnvidia-encode; without it CUDA works but NVENC transcode does not.
@@ -70,6 +101,16 @@ spec:
               value: all
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: compute,video,utility
+            {{- else if $isIntelMode }}
+            # Do not expose NVIDIA devices on Intel hosts (jellyfin-chart
+            # pattern): prevents vendor hooks from adding a foreign render node
+            # beside the configured one, which breaks QSV/VAAPI derivation.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+            # Intel Arc / i450+: iHD is the VA-API driver for Gen12+/Xe media.
+            - name: LIBVA_DRIVER_NAME
+              value: iHD
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -110,6 +151,10 @@ spec:
               mountPath: /var/lib/silo
             - name: silo-transcode
               mountPath: /tmp/silo-transcode
+            {{- if $intelLegacyAccel }}
+            - name: dri
+              mountPath: /dev/dri
+            {{- end }}
             - name: nas-media
               # LarePass-connected SMB/NFS mounts (External area) land on the node
               # under /olares/share (injected as .Values.sharedlib); subPath limits
@@ -128,6 +173,12 @@ spec:
             type: DirectoryOrCreate
         - name: silo-transcode
           emptyDir: {}
+        {{- if $intelLegacyAccel }}
+        - name: dri
+          hostPath:
+            path: /dev/dri
+            type: Directory
+        {{- end }}
         - name: nas-media
           hostPath:
             path: {{ .Values.sharedlib | default "/olares/share" | quote }}

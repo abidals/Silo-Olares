@@ -4,4 +4,4 @@ description: Self-hosted media streaming server (films, series, audiobooks, eboo
   podcasts, manga) with a Go backend, React UI, and Jellyfin-compatible APIs.
 name: silo
 type: application
-version: 0.1.6
+version: 0.1.7

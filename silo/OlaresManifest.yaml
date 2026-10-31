@@ -11,7 +11,7 @@ metadata:
   description: Self-hosted media streaming server for films, series, audiobooks, ebooks, podcasts, and manga.
   appid: silo
   title: Silo
-  version: '0.1.6'
+  version: '0.1.7'
   categories: [Fun]
 
 entrances:
@@ -37,6 +37,10 @@ spec:
     - Pluggable libraries, providers, storage backends (local, S3/MinIO), and search (Meilisearch)
     - Runs on the official ghcr.io/silo-server/silo-server image with system PostgreSQL + Redis middleware
   upgradeDescription: |
+    v0.1.7: Adds Intel VA-API/QSV hardware transcoding (mode intel — Arc dGPU or
+    iGPU; Olares 1.12.6 passthroughs /dev/dri with LIBVA_DRIVER_NAME=iHD, 1.12.7+
+    uses gpu-inject) and declares arm64 support (upstream images are multi-arch).
+    NVIDIA mode unchanged.
     v0.1.6: Fixes the crash-loop with upstream's new "Silo omnibus" image
     (s6-overlay, Entrypoint /init, build-1883+): the charts' legacy
     args: ["server"] was interpreted by rc.init as a nonexistent service
@@ -76,12 +80,13 @@ spec:
     url: https://github.com/Silo-Server/silo-server?tab=AGPL-3.0-or-later#readme
   supportArch:
   - amd64
+  - arm64
   # Accelerator-declared app (mutually exclusive with the flat required*/limited*
-  # envelope, which v0.1.3 used). The target is a single amd64 box with an RTX
-  # 3090 Ti (gpu.bytetrade.io/nvidia=true), so the two modes below are the
-  # complete set: nvidia (NVENC hw transcode; the Deployment's gpu-inject
-  # annotation wires the device) and cpu (Silo's own CPU-only fallback, how
-  # v0.1.3 ran).
+  # envelope).cpu runs on every architecture; nvidia covers NVENC rigs (amd64);
+  # intel covers VA-API/QSV rigs (Intel Arc/iGPU, amd64; unified memory — the
+  # iGPU/dGPU draws from pod memory, so no GPUMemory fields — lint forbids them
+  # on non-discrete-mode entries). Olares exposes an Arc A770 dGPU under the
+  # 'intel' node label (gpu.bytetrade.io/intel=true).
   accelerator:
   - mode: cpu
     requiredCpu: "1"
@@ -103,6 +108,13 @@ spec:
     # surfaces for several concurrent sessions.
     requiredGPUMemory: 2Gi
     limitedGPUMemory: 4Gi
+  - mode: intel
+    requiredCpu: "1"
+    limitedCpu: "8"
+    requiredMemory: 3Gi
+    limitedMemory: 8Gi
+    requiredDisk: 1Gi
+    limitedDisk: 20Gi
   # spec.runAsUser intentionally left OFF: the official silo image has no USER directive
   # (ENTRYPOINT ["silo"] starts as root) and writes its durable data to the always-on system
   # PostgreSQL/Redis middleware plus a read-only media mount, not to a userspace dir that needs
