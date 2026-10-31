@@ -1,0 +1,4 @@
+# Build artifacts
+*.tgz
+# Editor noise
+.DS_Store

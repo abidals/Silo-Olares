@@ -1,0 +1,134 @@
+{{- $siloDomain := (splitList "," .Values.domain.silo | first) -}}
+{{- $secretName := (printf "%s-secrets" .Release.Name) -}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: '{{ .Release.Namespace }}'
+  labels:
+    app.kubernetes.io/name: silo
+  # The platform injects NVIDIA GPU resources into the pod (runtimeClassName
+  # nvidia + nvidia.com/gpu / nvidia.com/gpumem) when an accelerator: nvidia
+  # mode is selected. On a node without an NVIDIA GPU the app falls back to
+  # Silo's own CPU-only transcode path, so this annotation is safe to leave on.
+  annotations:
+    applications.app.bytetrade.io/gpu-inject: "true"
+spec:
+  replicas: {{ .Values.workloads.silo.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: silo
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: silo
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: silo
+          image: "ghcr.io/silo-server/silo-server:latest"
+          # Upstream ships rolling `latest` builds (no release tags); Always keeps
+          # restarts/upgrades on the newest build instead of a stale node cache.
+          imagePullPolicy: Always
+          # NO extra args: since upstream's "Silo omnibus" rework (s6-overlay,
+          # Entrypoint ["/init"], build-1883+), any arg is interpreted by
+          # rc.init as a SERVICE NAME — the old `server` subcommand arg made
+          # rc.init fail with "server: not found" and crash-loop the app.
+          # Role is driven by env (MODE etc.) instead.
+          env:
+            - name: TZ
+              value: Etc/UTC
+            - name: MODE
+              value: integrated
+            - name: PORT
+              value: "8080"
+            - name: JF_PORT
+              value: "8096"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: secret_key
+            - name: DATABASE_URL
+              value: "postgres://{{ .Values.postgres.username }}:{{ .Values.postgres.password }}@{{ .Values.postgres.host }}:{{ .Values.postgres.port | toString }}/{{ .Values.postgres.databases.silo }}?sslmode=disable"
+            - name: REDIS_URL
+              # The system Redis (kvrocks) proxy requires auth; include the
+              # middleware password or Silo's logstream eventBus fails to subscribe
+              # and main() exits with "NOAUTH Authentication required".
+              value: "redis://:{{ .Values.redis.password }}@{{ .Values.redis.host }}:{{ .Values.redis.port | toString }}"
+            - name: SILO_PUBLIC_URL
+              value: 'https://{{ $siloDomain }}'
+            - name: MEDIA_CONTAINER_ROOT
+              value: /mnt/media
+            # NVIDIA driver injection for NVENC (same recipe as upstream
+            # docker-compose.nvidia.yml). `video` is the capability that mounts
+            # libnvidia-encode; without it CUDA works but NVENC transcode does not.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: compute,video,utility
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: jellyfin
+              containerPort: 8096
+            - name: abs
+              containerPort: 13378
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            intervalSeconds: 20
+            timeoutSeconds: 5
+            startPeriodSeconds: 20
+            retries: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            intervalSeconds: 10
+            timeoutSeconds: 5
+            startPeriodSeconds: 10
+            retries: 3
+          resources:
+            requests:
+              cpu: 1
+              memory: 3Gi
+            limits:
+              # Playback headroom: API + library scan + ffmpeg NVENC transcode +
+              # in-app jellyfin-web (vite) asset builds all share this cgroup.
+              # 8/8Gi within the node's free capacity (20 cores, ~91Gi RAM).
+              cpu: "8"
+              memory: 8Gi
+          volumeMounts:
+            - name: media
+              mountPath: /mnt/media
+            - name: silo-data
+              mountPath: /var/lib/silo
+            - name: silo-transcode
+              mountPath: /tmp/silo-transcode
+            - name: nas-media
+              # LarePass-connected SMB/NFS mounts (External area) land on the node
+              # under /olares/share (injected as .Values.sharedlib); subPath limits
+              # the mount to this user's "Media" share directory only.
+              mountPath: /mnt/media/Media
+              subPath: Media
+      restartPolicy: Always
+      volumes:
+        - name: media
+          hostPath:
+            path: {{ .Values.userspace.appData | quote }}
+            type: DirectoryOrCreate
+        - name: silo-data
+          hostPath:
+            path: {{ .Values.userspace.externalData | default .Values.userspace.appData | quote }}
+            type: DirectoryOrCreate
+        - name: silo-transcode
+          emptyDir: {}
+        - name: nas-media
+          hostPath:
+            path: {{ .Values.sharedlib | default "/olares/share" | quote }}
+            type: Directory

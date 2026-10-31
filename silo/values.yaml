@@ -1,0 +1,3 @@
+workloads:
+  silo:
+    replicaCount: 1
