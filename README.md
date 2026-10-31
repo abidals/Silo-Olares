@@ -30,7 +30,13 @@ This repository hosts the Olares chart (packaging) for the upstream project [Sil
 
 ### Option A — install the release package (recommended)
 
-1. Download the latest `silo-<version>.tgz` from the [Releases](../../releases) page.
+1. Grab the latest package straight from Releases:
+
+   ```sh
+   curl -fsSLO https://github.com/abidals/Silo-Olares/releases/latest/download/silo-<version>.tgz
+   ```
+
+   (For this release: `silo-0.1.6.tgz`.)
 2. On your Olares:
 
    ```sh
